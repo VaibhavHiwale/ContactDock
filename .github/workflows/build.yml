@@ -17,7 +17,7 @@ jobs:
       - name: install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -28,6 +28,18 @@ jobs:
 
       - run: npm install
       - run: npm run tauri build -- --bundles deb
+
+      - name: smoke test the built Linux binary
+        run: |
+          xvfb-run --auto-servernum src-tauri/target/release/contactdock &
+          APP_PID=$!
+          sleep 5
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            echo "App exited or crashed within 5 seconds of starting"
+            exit 1
+          fi
+          echo "App still running after 5s - smoke test passed"
+          kill "$APP_PID"
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
