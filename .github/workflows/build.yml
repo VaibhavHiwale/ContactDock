@@ -50,8 +50,11 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-          - platform: ubuntu-22.04
-          - platform: macos-latest
+          # macOS and Linux are temporarily disabled until they've been
+          # manually verified on real hardware. Re-add these to bring back
+          # download options for those platforms:
+          # - platform: ubuntu-22.04
+          # - platform: macos-latest
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
