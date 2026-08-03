@@ -37,14 +37,21 @@ fn data_dir(app: AppHandle) -> Result<String, String> {
     Ok(dir.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn write_file(path: String, content: String) -> Result<(), String> {
+    fs::write(&path, content).map_err(|e| format!("could not write file: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             load_contacts,
             save_contacts,
-            data_dir
+            data_dir,
+            write_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

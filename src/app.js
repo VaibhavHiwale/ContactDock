@@ -8,6 +8,31 @@ let sortMode = "first";
 let searchQuery = "";
 let sourceFilter = "__all__";
 let saveTimer = null;
+let undoSnapshot = null;
+let ignoredGroupKeys = new Set();
+let ignoredPairs = new Set();
+
+/* ---------- undo ---------- */
+
+function snapshotForUndo() {
+  undoSnapshot = JSON.stringify(contacts);
+}
+
+function updateUndoButton() {
+  document.getElementById("btn-undo").hidden = !undoSnapshot;
+}
+
+function performUndo() {
+  if (!undoSnapshot) return;
+  contacts = JSON.parse(undoSnapshot);
+  undoSnapshot = null;
+  updateUndoButton();
+  persist();
+  renderList();
+  renderDetail();
+  renderDupModal();
+  showToast("Reverted");
+}
 
 /* ---------- persistence ---------- */
 
@@ -22,9 +47,12 @@ async function loadContacts() {
 
 function persist() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    await invoke("save_contacts", { json: JSON.stringify(contacts) });
-  }, 150);
+  saveTimer = setTimeout(flushSave, 150);
+}
+
+async function flushSave() {
+  clearTimeout(saveTimer);
+  await invoke("save_contacts", { json: JSON.stringify(contacts) });
 }
 
 /* ---------- model helpers ---------- */
@@ -105,6 +133,10 @@ class UnionFind {
   }
 }
 
+function pairKey(id1, id2) {
+  return id1 < id2 ? `${id1}|${id2}` : `${id2}|${id1}`;
+}
+
 function findDuplicateGroups() {
   const n = contacts.length;
   const uf = new UnionFind(n);
@@ -112,22 +144,27 @@ function findDuplicateGroups() {
   const byEmail = new Map();
   const byName = new Map();
 
+  const tryUnion = (i, j) => {
+    if (ignoredPairs.has(pairKey(contacts[i].id, contacts[j].id))) return;
+    uf.union(i, j);
+  };
+
   contacts.forEach((c, i) => {
     for (const p of c.phones) {
       const key = normPhone(p.value);
       if (!key) continue;
-      if (byPhone.has(key)) uf.union(i, byPhone.get(key));
+      if (byPhone.has(key)) tryUnion(i, byPhone.get(key));
       else byPhone.set(key, i);
     }
     for (const e of c.emails) {
       const key = normEmail(e.value);
       if (!key) continue;
-      if (byEmail.has(key)) uf.union(i, byEmail.get(key));
+      if (byEmail.has(key)) tryUnion(i, byEmail.get(key));
       else byEmail.set(key, i);
     }
     const key = normName(`${c.firstName} ${c.lastName}`);
     if (key) {
-      if (byName.has(key)) uf.union(i, byName.get(key));
+      if (byName.has(key)) tryUnion(i, byName.get(key));
       else byName.set(key, i);
     }
   });
@@ -138,15 +175,22 @@ function findDuplicateGroups() {
     if (!groups.has(root)) groups.set(root, []);
     groups.get(root).push(contacts[i]);
   }
-  return [...groups.values()].filter((g) => g.length > 1);
+  return [...groups.values()].filter((g) => g.length > 1 && !ignoredGroupKeys.has(groupKey(g)));
+}
+
+function groupKey(group) {
+  return group
+    .map((c) => c.id)
+    .sort()
+    .join(",");
 }
 
 /* ---------- merge ---------- */
 
-function mergeContacts(group) {
+function computeMergedDraft(group) {
   const sorted = [...group].sort((a, b) => a.createdAt - b.createdAt);
   const base = sorted[0];
-  const merged = {
+  return {
     id: base.id,
     firstName: sorted.find((c) => c.firstName)?.firstName || "",
     lastName: sorted.find((c) => c.lastName)?.lastName || "",
@@ -159,11 +203,12 @@ function mergeContacts(group) {
     createdAt: base.createdAt,
     updatedAt: Date.now(),
   };
-  const keepIds = new Set([base.id]);
-  contacts = contacts.filter((c) => c === base || !group.includes(c));
-  const idx = contacts.findIndex((c) => c.id === base.id);
-  contacts[idx] = merged;
-  return merged;
+}
+
+function applyMerge(group, mergedContact) {
+  if (group.some((c) => c.id === selectedId)) selectedId = mergedContact.id;
+  contacts = contacts.filter((c) => !group.includes(c));
+  contacts.push(mergedContact);
 }
 
 function dedupeFields(fields, normFn) {
@@ -337,17 +382,18 @@ function contactToVcf(c) {
   return lines.join("\r\n");
 }
 
-function exportAllVcf() {
+async function exportAllVcf() {
+  const path = await invoke("plugin:dialog|save", {
+    options: {
+      title: "Export contacts",
+      defaultPath: "contacts.vcf",
+      filters: [{ name: "vCard", extensions: ["vcf"] }],
+    },
+  });
+  if (!path) return;
   const text = contacts.map(contactToVcf).join("\r\n");
-  const blob = new Blob([text], { type: "text/vcard" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "contacts.vcf";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  await invoke("write_file", { path, content: text });
+  showToast(`Exported to ${path}`);
 }
 
 /* ---------- rendering: list ---------- */
@@ -552,7 +598,10 @@ function currentContact() {
   return contacts.find((c) => c.id === selectedId) || null;
 }
 
-function renderFieldRows(container, fields, kind) {
+function renderFieldRows(container, fields, kind, hooks = {}) {
+  const onInput = hooks.onInput || (() => commitDetailChange({ skipRender: true }));
+  const onStructureChange = hooks.onStructureChange || (() => commitDetailChange());
+
   container.innerHTML = "";
   const typeOptions =
     kind === "phone"
@@ -573,7 +622,7 @@ function renderFieldRows(container, fields, kind) {
     }
     select.addEventListener("change", () => {
       f.type = select.value;
-      commitDetailChange();
+      onStructureChange();
     });
 
     const input = document.createElement("input");
@@ -582,7 +631,7 @@ function renderFieldRows(container, fields, kind) {
     input.placeholder = kind === "phone" ? "Phone number" : "Email address";
     input.addEventListener("input", () => {
       f.value = input.value;
-      commitDetailChange({ skipRender: true });
+      onInput();
     });
 
     const removeBtn = document.createElement("button");
@@ -592,7 +641,7 @@ function renderFieldRows(container, fields, kind) {
     removeBtn.title = "Remove";
     removeBtn.addEventListener("click", () => {
       fields.splice(i, 1);
-      commitDetailChange();
+      onStructureChange();
     });
 
     row.append(select, input, removeBtn);
@@ -668,11 +717,23 @@ document.getElementById("btn-delete").addEventListener("click", () => {
   const c = currentContact();
   if (!c) return;
   if (!confirm(`Delete ${displayName(c)}?`)) return;
+  snapshotForUndo();
   contacts = contacts.filter((x) => x.id !== c.id);
   selectedId = null;
+  updateUndoButton();
   persist();
   renderList();
   renderDetail();
+});
+
+document.getElementById("btn-save-close").addEventListener("click", async () => {
+  const c = currentContact();
+  if (!c) return;
+  await flushSave();
+  selectedId = null;
+  renderList();
+  renderDetail();
+  showToast("Saved");
 });
 
 /* ---------- new contact ---------- */
@@ -689,6 +750,17 @@ function createContact() {
 
 document.getElementById("btn-new").addEventListener("click", createContact);
 document.getElementById("btn-empty-new").addEventListener("click", createContact);
+
+document.getElementById("btn-refresh").addEventListener("click", async () => {
+  await flushSave();
+  await loadContacts();
+  if (!contacts.find((c) => c.id === selectedId)) selectedId = null;
+  undoSnapshot = null;
+  updateUndoButton();
+  renderList();
+  renderDetail();
+  showToast("Contacts refreshed from disk");
+});
 
 /* ---------- search / sort ---------- */
 
@@ -712,21 +784,27 @@ btnRemoveSource.addEventListener("click", () => {
   if (sourceFilter === "__all__") return;
   const n = contacts.filter((c) => c.source === sourceFilter).length;
   if (!confirm(`Remove all ${n} contact${n === 1 ? "" : "s"} from source "${sourceFilter}"?`)) return;
+  snapshotForUndo();
   contacts = contacts.filter((c) => c.source !== sourceFilter);
   if (!contacts.find((c) => c.id === selectedId)) selectedId = null;
   sourceFilter = "__all__";
+  updateUndoButton();
   persist();
   renderList();
   renderDetail();
   showToast("Source removed");
 });
 
+document.getElementById("btn-undo").addEventListener("click", performUndo);
+
 document.getElementById("btn-clear-all").addEventListener("click", () => {
   if (!contacts.length) return;
-  if (!confirm(`Delete all ${contacts.length} contacts? This cannot be undone.`)) return;
+  if (!confirm(`Delete all ${contacts.length} contacts? You can undo this afterward.`)) return;
+  snapshotForUndo();
   contacts = [];
   selectedId = null;
   sourceFilter = "__all__";
+  updateUndoButton();
   persist();
   renderList();
   renderDetail();
@@ -776,6 +854,7 @@ function openDupModal() {
 
 function renderDupModal() {
   const groups = findDuplicateGroups();
+  document.getElementById("btn-merge-all").hidden = groups.length === 0;
   dupBody.innerHTML = "";
   if (!groups.length) {
     dupBody.innerHTML = '<div class="dup-empty">No duplicates found.</div>';
@@ -787,10 +866,19 @@ function renderDupModal() {
     box.innerHTML = `
       <div class="dup-group-head">
         <h4>${group.length} matching contacts</h4>
-        <button class="btn btn-accent" data-auto="${gi}">Auto-merge</button>
+        <div class="dup-group-actions">
+          <button class="btn" data-ignore="${gi}">Not a duplicate</button>
+          <button class="btn btn-accent" data-review="${gi}">Merge…</button>
+        </div>
       </div>
       <div class="dup-members"></div>
     `;
+    box.querySelector("[data-ignore]").addEventListener("click", () => {
+      ignoredGroupKeys.add(groupKey(group));
+      renderDupModal();
+      renderList();
+      showToast("Won't be suggested as a duplicate again this session");
+    });
     const membersEl = box.querySelector(".dup-members");
     for (const c of group) {
       const m = document.createElement("div");
@@ -802,25 +890,279 @@ function renderDupModal() {
           <div class="dm-name">${escapeHtml(displayName(c))}</div>
           <div class="dm-detail">${escapeHtml(phone)} · ${escapeHtml(email)}${c.org ? " · " + escapeHtml(c.org) : ""}</div>
         </div>
+        <button type="button" class="btn-edit-member" title="Edit this contact">Edit</button>
+        <button type="button" class="btn-not-match" title="This contact isn't a duplicate of the others here — keeps it, just stops the match">Not a match</button>
+        <button type="button" class="btn-remove-field" title="Delete this contact">✕</button>
       `;
+      m.querySelector(".btn-edit-member").addEventListener("click", () => openMemberEdit(c));
+      m.querySelector(".btn-not-match").addEventListener("click", () => {
+        for (const other of group) {
+          if (other.id === c.id) continue;
+          ignoredPairs.add(pairKey(c.id, other.id));
+        }
+        renderDupModal();
+        renderList();
+        showToast(`${displayName(c)} won't be matched with these contacts again this session`);
+      });
+      m.querySelector(".btn-remove-field").addEventListener("click", () => {
+        if (!confirm(`Delete ${displayName(c)}? This permanently removes this one contact. Duplicate matches will be recalculated afterward.`))
+          return;
+        snapshotForUndo();
+        contacts = contacts.filter((x) => x.id !== c.id);
+        if (selectedId === c.id) selectedId = null;
+        updateUndoButton();
+        persist();
+        renderList();
+        renderDetail();
+        renderDupModal();
+        showToast("1 contact deleted");
+      });
       membersEl.appendChild(m);
     }
-    box.querySelector("[data-auto]").addEventListener("click", () => {
-      mergeContacts(group);
-      persist();
-      renderList();
-      renderDetail();
-      renderDupModal();
-      showToast("Merged");
-    });
+    box.querySelector("[data-review]").addEventListener("click", () => openMergeReview(group));
     dupBody.appendChild(box);
   });
 }
 
 document.getElementById("btn-duplicates").addEventListener("click", openDupModal);
+document.getElementById("btn-dup-refresh").addEventListener("click", () => {
+  renderDupModal();
+  renderList();
+  showToast("Duplicates rechecked");
+});
 document.getElementById("btn-dup-close").addEventListener("click", () => (dupModal.hidden = true));
 dupModal.addEventListener("click", (e) => {
   if (e.target === dupModal) dupModal.hidden = true;
+});
+
+document.getElementById("btn-merge-all").addEventListener("click", () => {
+  const groups = findDuplicateGroups();
+  if (!groups.length) return;
+  const totalContacts = groups.reduce((n, g) => n + g.length, 0);
+  const groupWord = groups.length === 1 ? "group" : "groups";
+  if (
+    !confirm(
+      `Automatically merge ${groups.length} duplicate ${groupWord} (${totalContacts} contacts)? You can undo this afterward.`
+    )
+  )
+    return;
+  snapshotForUndo();
+  for (const group of groups) {
+    const draft = computeMergedDraft(group);
+    applyMerge(group, draft);
+  }
+  updateUndoButton();
+  persist();
+  renderList();
+  renderDetail();
+  renderDupModal();
+  showToast(`Merged ${groups.length} ${groupWord}`);
+});
+
+/* ---------- member edit overlay (stacks over the duplicates modal) ---------- */
+
+const memberEditModal = document.getElementById("member-edit-modal");
+const meFirst = document.getElementById("me-first");
+const meLast = document.getElementById("me-last");
+const meOrg = document.getElementById("me-org");
+const meNotesEl = document.getElementById("me-notes");
+const meAvatarEl = document.getElementById("me-avatar");
+const meFavoriteBtn = document.getElementById("me-favorite");
+const mePhonesListEl = document.getElementById("me-phones-list");
+const meEmailsListEl = document.getElementById("me-emails-list");
+
+let memberEdit = null; // { draft }
+
+function openMemberEdit(c) {
+  memberEdit = { draft: JSON.parse(JSON.stringify(c)) };
+  renderMemberEdit();
+  memberEditModal.hidden = false;
+}
+
+function renderMemberEdit() {
+  const { draft } = memberEdit;
+  meFirst.value = draft.firstName;
+  meLast.value = draft.lastName;
+  meOrg.value = draft.org;
+  meNotesEl.value = draft.notes;
+  meAvatarEl.textContent = initials(draft);
+  meFavoriteBtn.classList.toggle("active", !!draft.favorite);
+  meFavoriteBtn.setAttribute("aria-pressed", String(!!draft.favorite));
+
+  const hooks = { onInput: () => {}, onStructureChange: renderMemberEdit };
+  renderFieldRows(mePhonesListEl, draft.phones, "phone", hooks);
+  renderFieldRows(meEmailsListEl, draft.emails, "email", hooks);
+}
+
+[meFirst, meLast, meOrg, meNotesEl].forEach((el) => {
+  el.addEventListener("input", () => {
+    if (!memberEdit) return;
+    memberEdit.draft.firstName = meFirst.value;
+    memberEdit.draft.lastName = meLast.value;
+    memberEdit.draft.org = meOrg.value;
+    memberEdit.draft.notes = meNotesEl.value;
+  });
+});
+
+meFavoriteBtn.addEventListener("click", () => {
+  if (!memberEdit) return;
+  memberEdit.draft.favorite = !memberEdit.draft.favorite;
+  meFavoriteBtn.classList.toggle("active", memberEdit.draft.favorite);
+  meFavoriteBtn.setAttribute("aria-pressed", String(memberEdit.draft.favorite));
+});
+
+document.getElementById("me-add-phone").addEventListener("click", () => {
+  if (!memberEdit) return;
+  memberEdit.draft.phones.push({ type: "mobile", value: "" });
+  renderMemberEdit();
+});
+
+document.getElementById("me-add-email").addEventListener("click", () => {
+  if (!memberEdit) return;
+  memberEdit.draft.emails.push({ type: "home", value: "" });
+  renderMemberEdit();
+});
+
+function closeMemberEdit() {
+  memberEdit = null;
+  memberEditModal.hidden = true;
+}
+
+document.getElementById("btn-me-cancel").addEventListener("click", closeMemberEdit);
+document.getElementById("btn-me-close").addEventListener("click", closeMemberEdit);
+memberEditModal.addEventListener("click", (e) => {
+  if (e.target === memberEditModal) closeMemberEdit();
+});
+
+document.getElementById("btn-me-save").addEventListener("click", () => {
+  if (!memberEdit) return;
+  const { draft } = memberEdit;
+  draft.updatedAt = Date.now();
+  const idx = contacts.findIndex((x) => x.id === draft.id);
+  if (idx !== -1) contacts[idx] = draft;
+  persist();
+  closeMemberEdit();
+  renderList();
+  renderDetail();
+  renderDupModal();
+  showToast("Saved");
+});
+
+/* ---------- merge review modal ---------- */
+
+const mergeModal = document.getElementById("merge-modal");
+const mergeFirst = document.getElementById("merge-first");
+const mergeLast = document.getElementById("merge-last");
+const mergeOrg = document.getElementById("merge-org");
+const mergeNotesEl = document.getElementById("merge-notes");
+const mergeAvatarEl = document.getElementById("merge-avatar");
+const mergeFavoriteBtn = document.getElementById("merge-favorite");
+const mergePhonesListEl = document.getElementById("merge-phones-list");
+const mergeEmailsListEl = document.getElementById("merge-emails-list");
+const mergeParticipantsEl = document.getElementById("merge-participants");
+const btnMergeConfirmEl = document.getElementById("btn-merge-confirm");
+
+let mergeReview = null; // { workingSet, draft }
+
+function openMergeReview(group) {
+  mergeReview = { workingSet: [...group], draft: computeMergedDraft(group) };
+  renderMergeReview();
+  mergeModal.hidden = false;
+}
+
+function renderMergeReview() {
+  const { draft, workingSet } = mergeReview;
+
+  mergeParticipantsEl.innerHTML = "";
+  for (const c of workingSet) {
+    const chip = document.createElement("div");
+    chip.className = "merge-chip";
+    chip.innerHTML = `<span>${escapeHtml(displayName(c))}</span>`;
+    if (workingSet.length > 1) {
+      const rm = document.createElement("button");
+      rm.type = "button";
+      rm.title = "Remove from this merge (keeps the contact, just won't be merged)";
+      rm.textContent = "✕";
+      rm.addEventListener("click", () => {
+        mergeReview.workingSet = mergeReview.workingSet.filter((x) => x.id !== c.id);
+        mergeReview.draft = computeMergedDraft(mergeReview.workingSet);
+        renderMergeReview();
+      });
+      chip.appendChild(rm);
+    }
+    mergeParticipantsEl.appendChild(chip);
+  }
+
+  btnMergeConfirmEl.disabled = workingSet.length < 2;
+  btnMergeConfirmEl.title = workingSet.length < 2 ? "Select at least 2 contacts to merge" : "";
+
+  mergeFirst.value = draft.firstName;
+  mergeLast.value = draft.lastName;
+  mergeOrg.value = draft.org;
+  mergeNotesEl.value = draft.notes;
+  mergeAvatarEl.textContent = initials(draft);
+  mergeFavoriteBtn.classList.toggle("active", !!draft.favorite);
+  mergeFavoriteBtn.setAttribute("aria-pressed", String(!!draft.favorite));
+
+  const structureHooks = { onInput: () => {}, onStructureChange: renderMergeReview };
+  renderFieldRows(mergePhonesListEl, draft.phones, "phone", structureHooks);
+  renderFieldRows(mergeEmailsListEl, draft.emails, "email", structureHooks);
+}
+
+[mergeFirst, mergeLast, mergeOrg, mergeNotesEl].forEach((el) => {
+  el.addEventListener("input", () => {
+    if (!mergeReview) return;
+    mergeReview.draft.firstName = mergeFirst.value;
+    mergeReview.draft.lastName = mergeLast.value;
+    mergeReview.draft.org = mergeOrg.value;
+    mergeReview.draft.notes = mergeNotesEl.value;
+  });
+});
+
+mergeFavoriteBtn.addEventListener("click", () => {
+  if (!mergeReview) return;
+  mergeReview.draft.favorite = !mergeReview.draft.favorite;
+  mergeFavoriteBtn.classList.toggle("active", mergeReview.draft.favorite);
+  mergeFavoriteBtn.setAttribute("aria-pressed", String(mergeReview.draft.favorite));
+});
+
+document.getElementById("merge-add-phone").addEventListener("click", () => {
+  if (!mergeReview) return;
+  mergeReview.draft.phones.push({ type: "mobile", value: "" });
+  renderMergeReview();
+});
+
+document.getElementById("merge-add-email").addEventListener("click", () => {
+  if (!mergeReview) return;
+  mergeReview.draft.emails.push({ type: "home", value: "" });
+  renderMergeReview();
+});
+
+function closeMergeReview() {
+  mergeReview = null;
+  mergeModal.hidden = true;
+}
+
+document.getElementById("btn-merge-cancel").addEventListener("click", closeMergeReview);
+document.getElementById("btn-merge-close").addEventListener("click", closeMergeReview);
+mergeModal.addEventListener("click", (e) => {
+  if (e.target === mergeModal) closeMergeReview();
+});
+
+document.getElementById("btn-merge-confirm").addEventListener("click", () => {
+  if (!mergeReview) return;
+  const { workingSet, draft } = mergeReview;
+  if (workingSet.length < 2) return;
+  draft.updatedAt = Date.now();
+  snapshotForUndo();
+  applyMerge(workingSet, draft);
+  updateUndoButton();
+  persist();
+  closeMergeReview();
+  renderList();
+  renderDetail();
+  renderDupModal();
+  showToast("Merged");
 });
 
 /* ---------- data location ---------- */

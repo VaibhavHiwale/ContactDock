@@ -21,6 +21,7 @@
           <button id="btn-duplicates" class="btn" title="Find duplicate contacts">
             Duplicates <span id="dup-badge" class="badge" hidden>0</span>
           </button>
+          <button id="btn-refresh" class="btn" title="Reload contacts from disk">⟳ Refresh</button>
           <div class="toolbar-menu">
             <button id="btn-import" class="btn" title="Import vCard (.vcf)">Import</button>
             <button id="btn-export" class="btn" title="Export all contacts as vCard (.vcf)">Export</button>
@@ -95,7 +96,10 @@
 
             <div class="form-footer">
               <span id="form-meta" class="form-meta"></span>
-              <button type="button" id="btn-delete" class="btn btn-danger">Delete</button>
+              <div class="form-footer-actions">
+                <button type="button" id="btn-delete" class="btn btn-danger">Delete</button>
+                <button type="button" id="btn-save-close" class="btn btn-accent">Save &amp; close</button>
+              </div>
             </div>
           </form>
         </section>
@@ -104,6 +108,7 @@
       <footer class="statusbar">
         <span id="contact-count">0 contacts</span>
         <div class="statusbar-actions">
+          <button id="btn-undo" class="link-btn" hidden>Undo last change</button>
           <button id="btn-clear-all" class="link-btn link-btn-danger" title="Delete all contacts">Clear all</button>
           <button id="btn-data-location" class="link-btn" title="Open the folder where your data is stored">Data location</button>
         </div>
@@ -114,9 +119,105 @@
       <div class="modal-panel modal-wide">
         <div class="modal-head">
           <h2>Possible duplicates</h2>
-          <button id="btn-dup-close" class="btn-icon" aria-label="Close">✕</button>
+          <div class="modal-head-actions">
+            <button id="btn-dup-refresh" class="btn" title="Recheck for duplicates now">⟳ Refresh</button>
+            <button id="btn-merge-all" class="btn btn-accent">Merge all…</button>
+            <button id="btn-dup-close" class="btn-icon" aria-label="Close">✕</button>
+          </div>
         </div>
         <div id="dup-body" class="modal-body"></div>
+      </div>
+    </div>
+
+    <div id="member-edit-modal" class="modal" hidden>
+      <div class="modal-panel">
+        <div class="modal-head">
+          <h2>Edit contact</h2>
+          <button id="btn-me-close" class="btn-icon" aria-label="Close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-header merge-form-header">
+            <div class="avatar" id="me-avatar">?</div>
+            <div class="form-header-fields">
+              <input id="me-first" type="text" placeholder="First name" autocomplete="off" />
+              <input id="me-last" type="text" placeholder="Last name" autocomplete="off" />
+              <input id="me-org" type="text" placeholder="Company / organization" autocomplete="off" />
+            </div>
+            <button type="button" id="me-favorite" class="btn-star" title="Toggle favorite" aria-pressed="false">★</button>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-head">
+              <h3>Phone</h3>
+              <button type="button" id="me-add-phone" class="btn-add-field">+ Add phone</button>
+            </div>
+            <div id="me-phones-list" class="field-list"></div>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-head">
+              <h3>Email</h3>
+              <button type="button" id="me-add-email" class="btn-add-field">+ Add email</button>
+            </div>
+            <div id="me-emails-list" class="field-list"></div>
+          </div>
+
+          <div class="form-section">
+            <h3>Notes</h3>
+            <textarea id="me-notes" rows="3" placeholder="Notes…"></textarea>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" id="btn-me-cancel" class="btn">Cancel</button>
+          <button type="button" id="btn-me-save" class="btn btn-accent">Save &amp; close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="merge-modal" class="modal" hidden>
+      <div class="modal-panel modal-wide">
+        <div class="modal-head">
+          <h2>Review merged contact</h2>
+          <button id="btn-merge-close" class="btn-icon" aria-label="Close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="merge-participants-label">Merging these contacts:</div>
+          <div id="merge-participants" class="merge-participants"></div>
+          <div class="form-header merge-form-header">
+            <div class="avatar" id="merge-avatar">?</div>
+            <div class="form-header-fields">
+              <input id="merge-first" type="text" placeholder="First name" autocomplete="off" />
+              <input id="merge-last" type="text" placeholder="Last name" autocomplete="off" />
+              <input id="merge-org" type="text" placeholder="Company / organization" autocomplete="off" />
+            </div>
+            <button type="button" id="merge-favorite" class="btn-star" title="Toggle favorite" aria-pressed="false">★</button>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-head">
+              <h3>Phone</h3>
+              <button type="button" id="merge-add-phone" class="btn-add-field">+ Add phone</button>
+            </div>
+            <div id="merge-phones-list" class="field-list"></div>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-head">
+              <h3>Email</h3>
+              <button type="button" id="merge-add-email" class="btn-add-field">+ Add email</button>
+            </div>
+            <div id="merge-emails-list" class="field-list"></div>
+          </div>
+
+          <div class="form-section">
+            <h3>Notes</h3>
+            <textarea id="merge-notes" rows="3" placeholder="Notes…"></textarea>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" id="btn-merge-cancel" class="btn">Cancel</button>
+          <button type="button" id="btn-merge-confirm" class="btn btn-accent">Confirm merge</button>
+        </div>
       </div>
     </div>
 
