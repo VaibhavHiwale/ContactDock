@@ -325,6 +325,55 @@ body {
   color: #ffd98a;
 }
 
+.contact-row.checked-for-merge {
+  background: rgba(196, 131, 43, 0.15);
+}
+
+.row-checkbox {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--ochre);
+  pointer-events: none;
+}
+
+.selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--paper-dim);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
+.selection-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.selection-bar .btn {
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+.selection-bar .btn:hover {
+  background: rgba(43, 93, 94, 0.08);
+}
+
+.selection-bar .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#btn-select-mode.active {
+  background: var(--ochre);
+  border-color: var(--ochre);
+  color: #fff;
+}
+
 .empty-state {
   padding: 24px 16px;
   text-align: center;

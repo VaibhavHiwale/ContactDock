@@ -22,6 +22,7 @@
             Duplicates <span id="dup-badge" class="badge" hidden>0</span>
           </button>
           <button id="btn-refresh" class="btn" title="Reload contacts from disk">⟳ Refresh</button>
+          <button id="btn-select-mode" class="btn" title="Select contacts to merge manually">Select to merge</button>
           <div class="toolbar-menu">
             <button id="btn-import" class="btn" title="Import vCard (.vcf)">Import</button>
             <button id="btn-export" class="btn" title="Export all contacts as vCard (.vcf)">Export</button>
@@ -46,6 +47,13 @@
               <option value="__all__">All sources</option>
             </select>
             <button id="btn-remove-source" class="btn-remove-field" title="Remove all contacts from this source" hidden>✕</button>
+          </div>
+          <div id="selection-bar" class="selection-bar" hidden>
+            <span id="selection-count">0 selected</span>
+            <div class="selection-bar-actions">
+              <button id="btn-cancel-select" class="btn">Cancel</button>
+              <button id="btn-merge-selected" class="btn btn-accent" disabled>Merge selected</button>
+            </div>
           </div>
           <div class="list-and-rail">
             <div id="contact-list" class="contact-list" role="listbox" aria-label="Contacts"></div>
@@ -110,6 +118,7 @@
         <div class="statusbar-actions">
           <button id="btn-undo" class="link-btn" hidden>Undo last change</button>
           <button id="btn-clear-all" class="link-btn link-btn-danger" title="Delete all contacts">Clear all</button>
+          <button id="btn-report-bug" class="link-btn" title="Opens a new GitHub issue in your browser">Report a bug</button>
           <button id="btn-data-location" class="link-btn" title="Open the folder where your data is stored">Data location</button>
         </div>
       </footer>

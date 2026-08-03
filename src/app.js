@@ -1,5 +1,14 @@
 const { invoke } = window.__TAURI__.core;
 
+window.addEventListener("error", (e) => {
+  console.error(e.error || e.message);
+  showToast(`Error: ${e.message}`);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  console.error(e.reason);
+  showToast(`Error: ${e.reason?.message || e.reason}`);
+});
+
 /* ---------- state ---------- */
 
 let contacts = [];
@@ -11,6 +20,8 @@ let saveTimer = null;
 let undoSnapshot = null;
 let ignoredGroupKeys = new Set();
 let ignoredPairs = new Set();
+let selectionMode = false;
+let selectedForMerge = new Set();
 
 /* ---------- undo ---------- */
 
@@ -38,10 +49,25 @@ function performUndo() {
 
 async function loadContacts() {
   const json = await invoke("load_contacts");
+  let data;
   try {
-    contacts = JSON.parse(json);
+    data = JSON.parse(json);
   } catch {
+    data = [];
+  }
+  if (Array.isArray(data)) {
+    // pre-existing plain-array format from earlier versions
+    contacts = data;
+    ignoredGroupKeys = new Set();
+    ignoredPairs = new Set();
+  } else if (data && typeof data === "object") {
+    contacts = Array.isArray(data.contacts) ? data.contacts : [];
+    ignoredGroupKeys = new Set(data.ignoredGroupKeys || []);
+    ignoredPairs = new Set(data.ignoredPairs || []);
+  } else {
     contacts = [];
+    ignoredGroupKeys = new Set();
+    ignoredPairs = new Set();
   }
 }
 
@@ -52,7 +78,12 @@ function persist() {
 
 async function flushSave() {
   clearTimeout(saveTimer);
-  await invoke("save_contacts", { json: JSON.stringify(contacts) });
+  const payload = JSON.stringify({
+    contacts,
+    ignoredGroupKeys: [...ignoredGroupKeys],
+    ignoredPairs: [...ignoredPairs],
+  });
+  await invoke("save_contacts", { json: payload });
 }
 
 /* ---------- model helpers ---------- */
@@ -502,7 +533,9 @@ function renderList() {
     }
 
     const row = document.createElement("div");
-    row.className = "contact-row" + (c.id === selectedId ? " selected" : "");
+    const isChecked = selectedForMerge.has(c.id);
+    row.className =
+      "contact-row" + (c.id === selectedId ? " selected" : "") + (selectionMode && isChecked ? " checked-for-merge" : "");
     row.setAttribute("role", "option");
     row.dataset.id = c.id;
 
@@ -510,6 +543,7 @@ function renderList() {
     const showSourceTag = multiSource && sourceFilter === "__all__";
 
     row.innerHTML = `
+      ${selectionMode ? `<input type="checkbox" class="row-checkbox" ${isChecked ? "checked" : ""} tabindex="-1" />` : ""}
       <div class="row-avatar">${initials(c)}</div>
       <div class="row-text">
         <div class="row-name">${escapeHtml(displayName(c))}</div>
@@ -517,7 +551,16 @@ function renderList() {
       </div>
       ${c.favorite ? '<div class="row-star">★</div>' : ""}
     `;
-    row.addEventListener("click", () => selectContact(c.id));
+    if (selectionMode) {
+      row.addEventListener("click", () => {
+        if (selectedForMerge.has(c.id)) selectedForMerge.delete(c.id);
+        else selectedForMerge.add(c.id);
+        renderList();
+        updateSelectionBar();
+      });
+    } else {
+      row.addEventListener("click", () => selectContact(c.id));
+    }
     listEl.appendChild(row);
   }
 
@@ -762,6 +805,38 @@ document.getElementById("btn-refresh").addEventListener("click", async () => {
   showToast("Contacts refreshed from disk");
 });
 
+/* ---------- manual merge selection ---------- */
+
+const selectionBarEl = document.getElementById("selection-bar");
+const selectionCountEl = document.getElementById("selection-count");
+const btnSelectModeEl = document.getElementById("btn-select-mode");
+const btnMergeSelectedEl = document.getElementById("btn-merge-selected");
+
+function updateSelectionBar() {
+  const n = selectedForMerge.size;
+  selectionCountEl.textContent = `${n} selected`;
+  btnMergeSelectedEl.disabled = n < 2;
+}
+
+function setSelectionMode(on) {
+  selectionMode = on;
+  selectedForMerge.clear();
+  selectionBarEl.hidden = !on;
+  btnSelectModeEl.classList.toggle("active", on);
+  updateSelectionBar();
+  renderList();
+}
+
+btnSelectModeEl.addEventListener("click", () => setSelectionMode(!selectionMode));
+document.getElementById("btn-cancel-select").addEventListener("click", () => setSelectionMode(false));
+
+btnMergeSelectedEl.addEventListener("click", () => {
+  const group = contacts.filter((c) => selectedForMerge.has(c.id));
+  if (group.length < 2) return;
+  setSelectionMode(false);
+  openMergeReview(group);
+});
+
 /* ---------- search / sort ---------- */
 
 document.getElementById("search-input").addEventListener("input", (e) => {
@@ -875,9 +950,10 @@ function renderDupModal() {
     `;
     box.querySelector("[data-ignore]").addEventListener("click", () => {
       ignoredGroupKeys.add(groupKey(group));
+      persist();
       renderDupModal();
       renderList();
-      showToast("Won't be suggested as a duplicate again this session");
+      showToast("Won't be suggested as a duplicate again");
     });
     const membersEl = box.querySelector(".dup-members");
     for (const c of group) {
@@ -900,9 +976,10 @@ function renderDupModal() {
           if (other.id === c.id) continue;
           ignoredPairs.add(pairKey(c.id, other.id));
         }
+        persist();
         renderDupModal();
         renderList();
-        showToast(`${displayName(c)} won't be matched with these contacts again this session`);
+        showToast(`${displayName(c)} won't be matched with these contacts again`);
       });
       m.querySelector(".btn-remove-field").addEventListener("click", () => {
         if (!confirm(`Delete ${displayName(c)}? This permanently removes this one contact. Duplicate matches will be recalculated afterward.`))
@@ -1170,6 +1247,12 @@ document.getElementById("btn-merge-confirm").addEventListener("click", () => {
 document.getElementById("btn-data-location").addEventListener("click", async () => {
   const dir = await invoke("data_dir");
   await invoke("plugin:opener|reveal_item_in_dir", { path: dir });
+});
+
+document.getElementById("btn-report-bug").addEventListener("click", async () => {
+  await invoke("plugin:opener|open_url", {
+    url: "https://github.com/VaibhavHiwale/ContactDock/issues/new",
+  });
 });
 
 /* ---------- toast ---------- */
